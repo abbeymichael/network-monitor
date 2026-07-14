@@ -9,6 +9,7 @@ import customtkinter as ctk
 from ..core.engine import MonitorEngine, EngineEvent
 from ..core.models import Server, NotificationRecord, StatusEvent
 from ..core import storage
+from ..core import notifier
 from . import theme
 from .widgets import GhostButton, NotificationBell, Toast
 from .dashboard_view import DashboardView
@@ -34,6 +35,7 @@ class PingSentryApp(ctk.CTk):
 
         self.engine = MonitorEngine()
         self._tray_icon = None
+        self._in_tray = False
         self._active_toasts = []
         self._unread_count = 0
         self._current_view = "dashboard"
@@ -223,16 +225,26 @@ class PingSentryApp(ctk.CTk):
         self.bell.set_count(0)
 
     def _handle_notification(self, rec: NotificationRecord):
-        # Add to the notifications page
+        # Add to the notifications page (safe even while withdrawn to tray)
         self.notifications_view.prepend_record(rec)
-        # Bump unread + bell
-        if self._current_view != "notifications":
+        # Bump unread + bell — always tracked so the count is correct on restore
+        if self._current_view != "notifications" or self._in_tray:
             self._unread_count += 1
             self.bell.set_count(self._unread_count)
             self.bell.flash()
-        # In-app toast (respect the setting)
-        if self.engine.settings.in_app_notifications:
-            self._show_toast_for(rec)
+
+        if not self.engine.settings.in_app_notifications:
+            return
+
+        title, message, kind = self._toast_text(rec)
+        if self._in_tray:
+            # The window is hidden — an in-app Tk toast would be invisible, so
+            # route the alert to the OS: a native desktop notification plus a
+            # tray-icon balloon. (Sounds already fire from the engine thread.)
+            notifier.notify_desktop(f"PingSentry — {title}", message)
+            self._tray_balloon(title, message)
+        else:
+            self._show_toast_for(rec, title, message, kind)
 
     def _toast_text(self, rec: NotificationRecord):
         if rec.kind == "recovery":
@@ -250,14 +262,36 @@ class PingSentryApp(ctk.CTk):
             return ("Alert suppressed", f"{rec.server_name}: {rec.detail}", "info")
         return (rec.server_name or "Notification", rec.message or rec.detail, "info")
 
-    def _show_toast_for(self, rec: NotificationRecord):
-        title, message, kind = self._toast_text(rec)
-        toast = Toast(self, title, message, kind=kind,
-                      on_click=lambda: self._show_view("notifications"))
+    def _show_toast_for(self, rec: NotificationRecord, title=None, message=None, kind=None):
+        if title is None:
+            title, message, kind = self._toast_text(rec)
+        # Guard: a Tk toast can't render while the main window is withdrawn
+        # (minimized to tray). Fall back to a native OS notification instead.
+        if self._in_tray or self.state() == "withdrawn":
+            notifier.notify_desktop(f"PingSentry — {title}", message)
+            self._tray_balloon(title, message)
+            return
+        try:
+            toast = Toast(self, title, message, kind=kind,
+                          on_click=lambda: self._show_view("notifications"))
+        except Exception:
+            notifier.notify_desktop(f"PingSentry — {title}", message)
+            return
         self._active_toasts.append(toast)
         self._reposition_toasts()
         # prune destroyed ones after their lifetime
         self.after(5600, self._prune_toasts)
+
+    def _tray_balloon(self, title: str, message: str):
+        """Show a balloon/notification from the tray icon if supported."""
+        icon = self._tray_icon
+        if icon is None:
+            return
+        try:
+            if getattr(icon, "HAS_NOTIFICATION", False):
+                icon.notify(message, f"PingSentry — {title}")
+        except Exception:
+            pass
 
     def _prune_toasts(self):
         self._active_toasts = [t for t in self._active_toasts if t.winfo_exists()]
@@ -427,6 +461,8 @@ class PingSentryApp(ctk.CTk):
             import pystray
             from PIL import Image, ImageDraw
         except ImportError:
+            # No tray backend — just minimize to the taskbar. Toasts still work
+            # here because the window is iconified, not withdrawn.
             self.iconify()
             return
 
@@ -442,7 +478,13 @@ class PingSentryApp(ctk.CTk):
             import threading
             threading.Thread(target=self._tray_icon.run, daemon=True).start()
 
+        self._in_tray = True
         self.withdraw()
+        # Let the user know monitoring keeps running in the background.
+        notifier.notify_desktop(
+            "PingSentry is still running",
+            "Monitoring continues in the tray. Alerts and sounds still fire.",
+        )
 
     def _restore_from_tray(self, icon=None, item=None):
         self.after(0, self._do_restore)
@@ -451,12 +493,14 @@ class PingSentryApp(ctk.CTk):
         if self._tray_icon:
             self._tray_icon.stop()
             self._tray_icon = None
+        self._in_tray = False
         self.deiconify()
         self.lift()
 
     def _quit_from_tray(self, icon=None, item=None):
         if self._tray_icon:
             self._tray_icon.stop()
+        self._in_tray = False
         self.after(0, self._quit_app)
 
 

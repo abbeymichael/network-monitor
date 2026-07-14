@@ -6,6 +6,8 @@ venv/
 build/
 dist/
 *.spec
+# ...but keep the committed PyInstaller build spec.
+!PingSentry.spec
 screenshot_*.png
 rev*.png
 *.log
