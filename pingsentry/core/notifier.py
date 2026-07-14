@@ -136,9 +136,46 @@ def notify_desktop(title: str, message: str) -> None:
                     subprocess.run([notify, title, message],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     return
-            # Windows toast via PowerShell BurntToast is not guaranteed; the
-            # in-app toast + tray already cover Windows, so we stay silent here.
+            if _IS_WINDOWS:
+                _notify_windows(title, message)
+                return
         except Exception:
             pass
 
     threading.Thread(target=_worker, daemon=True, name="PingSentry-Notify").start()
+
+
+def _notify_windows(title: str, message: str) -> None:
+    """Native Windows toast, best-effort with graceful fallbacks.
+
+    Tries the built-in Windows Runtime toast API via PowerShell (no extra
+    dependency), which surfaces a proper Action-Center notification even when
+    the main window is hidden in the tray. If that fails we stay silent — the
+    engine-thread sound + tray icon still convey the event.
+    """
+    # Escape for embedding inside a single-quoted PowerShell string.
+    safe_t = title.replace("'", "''")
+    safe_m = message.replace("'", "''")
+    ps = (
+        "[Windows.UI.Notifications.ToastNotificationManager, "
+        "Windows.UI.Notifications, ContentType=WindowsRuntime] > $null; "
+        "$xml = [Windows.UI.Notifications.ToastNotificationManager]::"
+        "GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
+        "$t = $xml.GetElementsByTagName('text'); "
+        f"$t[0].AppendChild($xml.CreateTextNode('{safe_t}')) > $null; "
+        f"$t[1].AppendChild($xml.CreateTextNode('{safe_m}')) > $null; "
+        "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml); "
+        "[Windows.UI.Notifications.ToastNotificationManager]::"
+        "CreateToastNotifier('PingSentry').Show($toast);"
+    )
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        return
+    try:
+        subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", ps],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=8, **_no_window_kwargs(),
+        )
+    except Exception:
+        pass

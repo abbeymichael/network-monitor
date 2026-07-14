@@ -43,7 +43,12 @@ and texts you when something goes down (and again when it recovers).
   virtually any SMS gateway.
 - Encrypted local storage of SMS API credentials (Fernet, machine-local key).
 - Dark, modern UI (customtkinter) with live dashboard, activity log, and
-  settings screens. Minimizes to system tray.
+  settings screens. **Minimizes to the system tray** and keeps monitoring in
+  the background — while in the tray, alerts are delivered as **native OS
+  desktop notifications** (Action Center toast on Windows, Notification Center
+  on macOS, `notify-send` on Linux) plus a tray-icon balloon, and the up/down
+  **sounds still play**. The notification-bell unread count keeps ticking so
+  nothing is missed when you re-open the window.
 
 ## Install & Run
 ```bash
@@ -61,25 +66,65 @@ python3 main.py
 - Data is stored per-OS user data dir (servers, settings, encrypted SMS
   credentials, activity log).
 
-## Packaging as a standalone executable
-Bundle the notification sounds (`on.wav` / `off.wav`) as data files so they
-ship inside the frozen app. The app resolves them from `sys._MEIPASS` at
-runtime.
+## Building an installable / standalone executable
 
-Windows (PowerShell):
+The repo ships a ready-to-use **PyInstaller spec** (`PingSentry.spec`) and
+one-command build scripts. The spec bundles the notification sounds
+(`on.wav` / `off.wav`) as data files so they ship inside the frozen app —
+resolved from `sys._MEIPASS` at runtime — and builds a **windowed** binary
+(no console window; ping/subprocess checks additionally use
+`CREATE_NO_WINDOW` on Windows so no terminal ever pops up).
+
+### One-command build
+
+**Windows** (Command Prompt / PowerShell):
+```bat
+build.bat
+```
+This installs dependencies, produces `dist\PingSentry.exe`, and — if
+[Inno Setup](https://jrsoftware.org/isdl.php) (`iscc`) is installed — also
+compiles the full installer `dist\PingSentry-Setup.exe`.
+
+**macOS / Linux:**
+```bash
+./build.sh
+```
+Produces `dist/PingSentry` (Linux executable) or `dist/PingSentry.app`
+(macOS bundle). On macOS you can then wrap it into a DMG:
+```bash
+hdiutil create -volname PingSentry -srcfolder dist/PingSentry.app \
+  -ov -format UDZO dist/PingSentry.dmg
+```
+
+### Building the Windows installer
+
+`installer.iss` is an [Inno Setup](https://jrsoftware.org/isdl.php) script
+that turns `dist\PingSentry.exe` into a proper installer
+(`dist\PingSentry-Setup.exe`). It:
+
+- installs into *Program Files* (per-user, no admin required),
+- creates Start-menu and optional desktop shortcuts, and
+- can register PingSentry to **launch at Windows startup** so monitoring
+  resumes automatically after a reboot.
+
+```bat
+REM 1) build the exe, 2) compile the installer
+build.bat
+iscc installer.iss     REM (build.bat runs this automatically if iscc is on PATH)
+```
+
+### Manual PyInstaller invocation (equivalent to the spec)
+If you prefer not to use the spec/scripts:
+
 ```powershell
+# Windows (note the ';' data separator)
 pyinstaller --noconfirm --windowed --name PingSentry `
   --add-data "pingsentry/assets/on.wav;pingsentry/assets" `
   --add-data "pingsentry/assets/off.wav;pingsentry/assets" main.py
 ```
-
-macOS / Linux (note the `:` path separator instead of `;`):
 ```bash
+# macOS / Linux (note the ':' data separator)
 pyinstaller --noconfirm --windowed --name PingSentry \
   --add-data "pingsentry/assets/on.wav:pingsentry/assets" \
   --add-data "pingsentry/assets/off.wav:pingsentry/assets" main.py
 ```
-
-`--windowed` ensures no console window is attached to the app itself, and the
-ping/subprocess checks are additionally launched with `CREATE_NO_WINDOW` so no
-terminal ever pops up while monitoring runs.
