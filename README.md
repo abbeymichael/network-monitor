@@ -13,8 +13,11 @@ and texts you when something goes down (and again when it recovers).
   between repeats, and a daily SMS cap per server — avoids alert spam.
 - Recovery SMS when a server comes back up.
 - Optional quiet hours (suppress SMS overnight, still logs the event).
-- SMS providers: **Twilio**, **Vonage (Nexmo)**, **Textbelt**, or a fully
-  generic **HTTP webhook** for any other gateway.
+- SMS providers: **Twilio**, **Vonage (Nexmo)**, **Textbelt**, **TxtConnect**,
+  or a fully **Custom Provider** — configure your own HTTP method, JSON/form
+  body template, headers, query params, authentication (Bearer / Basic /
+  API key in header or query param), and success detection to connect to
+  virtually any SMS gateway.
 - Encrypted local storage of SMS API credentials (Fernet, machine-local key).
 - Dark, modern UI (customtkinter) with live dashboard, activity log, and
   settings screens. Minimizes to system tray.

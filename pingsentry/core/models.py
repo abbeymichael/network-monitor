@@ -80,7 +80,7 @@ class Server:
 class SmsProviderConfig:
     """Holds credentials + config for the chosen SMS gateway."""
 
-    provider: str = "twilio"   # twilio | vonage | textbelt | generic_webhook | none
+    provider: str = "twilio"   # twilio | vonage | textbelt | txtconnect | custom | none
     # Common
     from_number: str = ""
     to_numbers: List[str] = field(default_factory=list)
@@ -96,12 +96,37 @@ class SmsProviderConfig:
     # Textbelt (simple key-based)
     textbelt_api_key: str = ""
 
-    # Generic webhook (POST JSON to any custom SMS gateway)
+    # TxtConnect (https://txtconnect.net) - Bearer-token JSON API
+    txtconnect_api_secret: str = ""
+    txtconnect_endpoint: str = "https://api.txtconnect.net/dev/api/sms/send"
+    txtconnect_unicode: bool = False
+
+    # ---- Custom provider: fully configurable generic HTTP SMS gateway ----
     webhook_url: str = ""
-    webhook_method: str = "POST"
+    webhook_method: str = "POST"                 # GET | POST | PUT | PATCH
+    webhook_content_type: str = "auto"            # auto | json | form
+
+    # Authentication
+    webhook_auth_type: str = "none"               # none | bearer | basic | api_key_header | api_key_query
+    webhook_auth_token: str = ""                  # bearer token / api key value
+    webhook_auth_header_name: str = "Authorization"  # header name for bearer/api_key_header
+    webhook_auth_query_name: str = "api_key"      # query param name for api_key_query
+    webhook_basic_username: str = ""
+    webhook_basic_password: str = ""
+
+    # Extra headers / query params (JSON object strings, {to}/{message}/{from} substituted)
     webhook_headers: Dict[str, str] = field(default_factory=dict)
-    # Body template - {message} and {to} placeholders substituted
-    webhook_body_template: str = '{"to": "{to}", "message": "{message}"}'
+    webhook_query_params: Dict[str, str] = field(default_factory=dict)
+
+    # Body template - {to}, {message}, {from} placeholders substituted.
+    # Sent as JSON if it parses as JSON (or content-type forces json),
+    # otherwise sent as an application/x-www-form-urlencoded body.
+    webhook_body_template: str = '{"to": "{to}", "message": "{message}", "from": "{from}"}'
+
+    # Success detection
+    webhook_success_check: str = "status_code"    # status_code | json_field
+    webhook_success_json_path: str = ""           # dotted path, e.g. "data.status"
+    webhook_success_json_value: str = ""          # expected value (string compare)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
