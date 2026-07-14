@@ -44,6 +44,30 @@ class CheckResult:
 _IS_WINDOWS = platform.system().lower() == "windows"
 
 
+def _silent_subprocess_kwargs() -> dict:
+    """Return kwargs that stop a console window from flashing on screen.
+
+    On Windows, shelling out to ``ping`` normally spawns a visible console
+    window (a black box that flickers open/closed on every single check).
+    Passing ``CREATE_NO_WINDOW`` (and a hidden STARTUPINFO) suppresses it so
+    monitoring stays completely silent on the user's PC. No-op elsewhere.
+    """
+    kwargs: dict = {}
+    if not _IS_WINDOWS:
+        return kwargs
+    # CREATE_NO_WINDOW = 0x08000000 — prevents any console window.
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    kwargs["creationflags"] = creationflags
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        kwargs["startupinfo"] = si
+    except (AttributeError, Exception):  # STARTUPINFO only exists on Windows
+        pass
+    return kwargs
+
+
 def _run_ping(address: str, timeout_seconds: int) -> CheckResult:
     """Shell out to the system ping utility (1 echo, bounded timeout)."""
     timeout_seconds = max(1, int(timeout_seconds))
@@ -62,6 +86,7 @@ def _run_ping(address: str, timeout_seconds: int) -> CheckResult:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout_seconds + 2,
+            **_silent_subprocess_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return CheckResult(success=False, error="ping timed out")

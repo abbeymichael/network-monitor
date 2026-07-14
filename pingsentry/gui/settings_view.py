@@ -78,6 +78,7 @@ class SettingsView(ctk.CTkFrame):
         app_settings: AppSettings,
         on_save_sms: Callable[[SmsProviderConfig], None],
         on_save_app: Callable[[AppSettings], None],
+        on_test_result: Callable[[bool, str], None] = None,
         **kwargs,
     ):
         super().__init__(master, fg_color="transparent", **kwargs)
@@ -85,6 +86,7 @@ class SettingsView(ctk.CTkFrame):
         self.app_settings = app_settings
         self.on_save_sms = on_save_sms
         self.on_save_app = on_save_app
+        self.on_test_result = on_test_result
 
         self.scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.scroll.pack(fill="both", expand=True)
@@ -457,6 +459,11 @@ class SettingsView(ctk.CTkFrame):
             self.sms_status_label.configure(text=f"✓ Test SMS sent successfully. ({info})", text_color=theme.SUCCESS)
         else:
             self.sms_status_label.configure(text=f"✕ Test SMS failed: {info}", text_color=theme.DANGER)
+        if self.on_test_result:
+            try:
+                self.on_test_result(ok, info)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     def _build_app_section(self):
@@ -467,7 +474,8 @@ class SettingsView(ctk.CTkFrame):
         self.start_min_switch = self._switch_row(body, "Start minimized to tray", self.app_settings.start_minimized)
         self.tray_switch = self._switch_row(body, "Minimize to tray on close", self.app_settings.minimize_to_tray)
         self.autostart_switch = self._switch_row(body, "Start monitoring automatically on launch", self.app_settings.launch_monitoring_on_start)
-        self.sound_switch = self._switch_row(body, "Play sound on alert", self.app_settings.sound_alerts)
+        self.sound_switch = self._switch_row(body, "Play sound on the PC when a target goes down / recovers (off.wav / on.wav)", self.app_settings.sound_alerts)
+        self.in_app_switch = self._switch_row(body, "Show in-app notification pop-ups (toasts) + bell", self.app_settings.in_app_notifications)
 
         divider = ctk.CTkFrame(body, height=1, fg_color=theme.BORDER)
         divider.pack(fill="x", pady=14)
@@ -507,6 +515,7 @@ class SettingsView(ctk.CTkFrame):
         self.app_settings.minimize_to_tray = bool(self.tray_switch.get())
         self.app_settings.launch_monitoring_on_start = bool(self.autostart_switch.get())
         self.app_settings.sound_alerts = bool(self.sound_switch.get())
+        self.app_settings.in_app_notifications = bool(self.in_app_switch.get())
         self.app_settings.quiet_hours_enabled = bool(self.quiet_switch.get())
         self.app_settings.quiet_hours_start = self.quiet_start_entry.get().strip() or "22:00"
         self.app_settings.quiet_hours_end = self.quiet_end_entry.get().strip() or "07:00"

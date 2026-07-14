@@ -73,6 +73,15 @@ class Server:
     alerts_sent_today: int = 0
     alerts_day_marker: Optional[str] = None  # yyyy-mm-dd the daily counter belongs to
 
+    # Lifetime aggregate stats (for the detail page & cards)
+    total_checks: int = 0
+    total_up_checks: int = 0
+    total_down_incidents: int = 0
+    total_sms_sent: int = 0
+    total_uptime_seconds: float = 0.0
+    total_downtime_seconds: float = 0.0
+    last_incident_at: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["check_method"] = self.check_method.value if isinstance(self.check_method, CheckMethod) else self.check_method
@@ -164,7 +173,8 @@ class AppSettings:
     quiet_hours_enabled: bool = False
     quiet_hours_start: str = "22:00"
     quiet_hours_end: str = "07:00"
-    sound_alerts: bool = False
+    sound_alerts: bool = True          # play on.wav / off.wav on status change
+    in_app_notifications: bool = True  # show toast popups + record in the bell
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -183,3 +193,55 @@ class LogEntry:
     server_name: str
     level: str          # info | warning | error | success
     message: str
+
+
+@dataclass
+class NotificationRecord:
+    """A single notification event — both the in-app toast/bell entry and
+    the record of an SMS send attempt (whether it succeeded or failed)."""
+
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    timestamp: str = ""
+    server_id: str = ""
+    server_name: str = ""
+    address: str = ""
+    kind: str = "down"          # down | recovery | test | info
+    channel: str = "sms"        # sms | in_app | sound
+    status: str = "sent"        # sent | failed | suppressed | info
+    message: str = ""           # the SMS / notification body
+    detail: str = ""            # provider response / extra info
+    error: str = ""             # error text when status == failed
+    recipients: List[str] = field(default_factory=list)
+    read: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "NotificationRecord":
+        valid_keys = set(NotificationRecord.__dataclass_fields__.keys())
+        filtered = {k: v for k, v in (d or {}).items() if k in valid_keys}
+        return NotificationRecord(**filtered)
+
+
+@dataclass
+class StatusEvent:
+    """A recorded UP/DOWN transition for a server, used to build the
+    per-server uptime/downtime timeline on the detail page."""
+
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    server_id: str = ""
+    status: str = "up"          # up | down
+    at: str = ""                # timestamp of the transition
+    reason: str = ""            # error text for down events
+    duration_seconds: Optional[float] = None  # how long the PREVIOUS state lasted
+    alerts_sent: int = 0        # SMS alerts sent during a down incident
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "StatusEvent":
+        valid_keys = set(StatusEvent.__dataclass_fields__.keys())
+        filtered = {k: v for k, v in (d or {}).items() if k in valid_keys}
+        return StatusEvent(**filtered)

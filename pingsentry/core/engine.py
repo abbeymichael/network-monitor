@@ -16,11 +16,20 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
 from .checker import check_target, CheckResult
-from .models import Server, ServerStatus, SmsProviderConfig, AppSettings, LogEntry
+from .models import (
+    Server, ServerStatus, SmsProviderConfig, AppSettings, LogEntry,
+    NotificationRecord, StatusEvent,
+)
 from . import storage
 from . import sms_providers
+from . import notifier
 
 TICK_SECONDS = 1.0
+
+# Hard ceiling of SMS per outage — we never want to spam more than a handful
+# of texts while something is down. The per-server setting can be lower, but
+# never higher than this safety cap.
+MAX_SMS_PER_INCIDENT = 5
 
 
 def _now() -> datetime:
@@ -33,6 +42,28 @@ def _iso(dt: datetime) -> str:
 
 def _today_marker() -> str:
     return _now().strftime("%Y-%m-%d")
+
+
+def human_duration(seconds: Optional[float]) -> str:
+    """Public alias — used by the GUI to render durations consistently."""
+    return _human_duration(seconds)
+
+
+def _human_duration(seconds: Optional[float]) -> str:
+    """Render a seconds count as a compact human string (e.g. '2h 5m')."""
+    if seconds is None:
+        return "—"
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {sec}s"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
 
 
 class EngineEvent:
@@ -113,6 +144,47 @@ class MonitorEngine:
     def check_now(self, server_id: str):
         """Force an immediate check on the next tick."""
         self._next_due[server_id] = 0
+
+    # ------------------------------------------------------------------
+    # Stats helpers (for detail page / cards)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def uptime_percent(server: Server) -> Optional[float]:
+        total = server.total_checks
+        if total <= 0:
+            return None
+        return round(100.0 * server.total_up_checks / total, 2)
+
+    @staticmethod
+    def current_state_duration_seconds(server: Server) -> Optional[float]:
+        if not server.last_status_change_at:
+            return None
+        try:
+            prev = datetime.strptime(server.last_status_change_at, "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            return None
+        return max(0.0, (_now() - prev).total_seconds())
+
+    def record_test_notification(self, ok: bool, info: str):
+        """Record a manual 'Send Test SMS' result so it shows in the bell/page."""
+        rec = NotificationRecord(
+            timestamp=_iso(_now()),
+            server_id="",
+            server_name="Test Message",
+            address="",
+            kind="test",
+            channel="sms",
+            status="sent" if ok else "failed",
+            message="PingSentry test message",
+            detail=info if ok else "",
+            error="" if ok else info,
+            recipients=list(self.sms_config.to_numbers or []),
+            read=False,
+        )
+        storage.append_notification(rec)
+        self._emit(EngineEvent("notification", notification=rec.to_dict()))
+        return rec
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -212,15 +284,29 @@ class MonitorEngine:
             self._apply_result(server, result)
             self.persist_servers()
 
-        self._emit(EngineEvent("check", server_id=server_id))
+        self._emit(EngineEvent(
+            "check", server_id=server_id,
+            success=result.success,
+            latency_ms=result.latency_ms,
+            error=result.error,
+        ))
+
+    def _duration_since(self, iso_ts: Optional[str], now: datetime) -> Optional[float]:
+        if not iso_ts:
+            return None
+        try:
+            prev = datetime.strptime(iso_ts, "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            return None
+        return max(0.0, (now - prev).total_seconds())
 
     def _apply_result(self, server: Server, result: CheckResult):
         now = _now()
         server.last_checked_at = _iso(now)
+        server.total_checks += 1
         if result.success:
             server.last_latency_ms = result.latency_ms
-
-        previous_status = server.status
+            server.total_up_checks += 1
 
         if result.success:
             server.consecutive_failures = 0
@@ -235,25 +321,48 @@ class MonitorEngine:
                 server.status = ServerStatus.UP.value
                 server.last_status_change_at = _iso(now)
                 self._log(server, "info", f"{server.name} initial check succeeded (UP).")
+                self._record_event(server, "up", now, reason="", prev_ts=None)
                 self._emit(EngineEvent("status_change", server_id=server.id, status="up"))
             elif server.status != ServerStatus.UP.value:
                 # Recovered from DOWN
                 was_down = server.status == ServerStatus.DOWN.value
+                down_for = self._duration_since(server.last_status_change_at, now)
+                if down_for:
+                    server.total_downtime_seconds += down_for
                 server.status = ServerStatus.UP.value
                 server.last_status_change_at = _iso(now)
+                alerts_this = server.alerts_sent_this_incident
                 server.alerts_sent_this_incident = 0
-                self._log(server, "success", f"{server.name} is back UP.")
-                self._emit(EngineEvent("status_change", server_id=server.id, status="up"))
+                dur_txt = _human_duration(down_for) if down_for else "unknown"
+                self._log(server, "success", f"{server.name} is back UP after {dur_txt} of downtime.")
+                self._record_event(server, "up", now, reason="", prev_ts=None,
+                                   duration=down_for, alerts=alerts_this)
+                # PC recovery sound
+                if self.settings.sound_alerts:
+                    notifier.play_status_sound(is_up=True)
+                self._emit(EngineEvent("status_change", server_id=server.id, status="up",
+                                       downtime_seconds=down_for))
                 if was_down and server.notify_on_recovery:
                     self._send_alert(server, recovery=True)
         else:
             if server.consecutive_failures >= max(1, server.failures_before_alert):
                 if server.status != ServerStatus.DOWN.value:
+                    up_for = self._duration_since(server.last_status_change_at, now)
+                    if up_for and server.status == ServerStatus.UP.value:
+                        server.total_uptime_seconds += up_for
                     server.status = ServerStatus.DOWN.value
                     server.last_status_change_at = _iso(now)
+                    server.last_incident_at = _iso(now)
                     server.alerts_sent_this_incident = 0
+                    server.total_down_incidents += 1
                     self._log(server, "error", f"{server.name} is DOWN ({result.error or 'no response'}).")
-                    self._emit(EngineEvent("status_change", server_id=server.id, status="down"))
+                    self._record_event(server, "down", now, reason=result.error or "no response",
+                                       prev_ts=None, duration=up_for)
+                    # PC down sound
+                    if self.settings.sound_alerts:
+                        notifier.play_status_sound(is_up=False)
+                    self._emit(EngineEvent("status_change", server_id=server.id, status="down",
+                                           reason=result.error or "no response"))
                     self._send_alert(server, recovery=False)
                 else:
                     # Still down - consider a repeat/escalation alert
@@ -266,6 +375,19 @@ class MonitorEngine:
                     f"{server.name} check failed ({result.error or 'no response'}) "
                     f"[{server.consecutive_failures}/{server.failures_before_alert}]",
                 )
+
+    def _record_event(self, server: Server, status: str, now: datetime, reason: str = "",
+                      prev_ts=None, duration=None, alerts: int = 0):
+        ev = StatusEvent(
+            server_id=server.id,
+            status=status,
+            at=_iso(now),
+            reason=reason,
+            duration_seconds=duration,
+            alerts_sent=alerts,
+        )
+        storage.append_status_event(ev)
+        self._emit(EngineEvent("status_event", server_id=server.id, event=ev.to_dict()))
 
     # ------------------------------------------------------------------
     # Alerting
@@ -297,7 +419,10 @@ class MonitorEngine:
             return False
 
     def _maybe_resend_alert(self, server: Server):
-        if server.alerts_sent_this_incident >= max(1, server.max_alerts_per_incident):
+        # Never send more than the safety cap of MAX_SMS_PER_INCIDENT (5),
+        # regardless of the per-server setting.
+        incident_cap = min(max(1, server.max_alerts_per_incident), MAX_SMS_PER_INCIDENT)
+        if server.alerts_sent_this_incident >= incident_cap:
             return
         if server.last_alert_sent_at:
             try:
@@ -309,12 +434,33 @@ class MonitorEngine:
         self._send_alert(server, recovery=False)
 
     def _send_alert(self, server: Server, recovery: bool):
+        kind = "recovery" if recovery else "down"
+        incident_cap = min(max(1, server.max_alerts_per_incident), MAX_SMS_PER_INCIDENT)
+
+        # Enforce the 5-per-incident safety ceiling for DOWN alerts.
+        if not recovery and server.alerts_sent_this_incident >= incident_cap:
+            self._log(server, "info",
+                      f"SMS cap of {incident_cap} reached for this outage of {server.name}; not sending more.")
+            self._record_notification(
+                server, kind="down", channel="sms", status="suppressed",
+                message="", detail=f"Reached {incident_cap} SMS for this outage (max {MAX_SMS_PER_INCIDENT}).",
+            )
+            return
+
         remaining = self._daily_cap_remaining(server)
         if not recovery and remaining <= 0:
             self._log(server, "warning", f"Daily alert cap reached for {server.name}; SMS suppressed.")
+            self._record_notification(
+                server, kind="down", channel="sms", status="suppressed",
+                message="", detail=f"Daily SMS cap of {server.daily_alert_cap} reached.",
+            )
             return
         if self._in_quiet_hours() and not recovery:
             self._log(server, "info", f"Quiet hours active; suppressing DOWN SMS for {server.name} (still logged).")
+            self._record_notification(
+                server, kind="down", channel="sms", status="suppressed",
+                message="", detail="Quiet hours active — SMS suppressed.",
+            )
             return
 
         if recovery:
@@ -323,17 +469,22 @@ class MonitorEngine:
                 f"as of {_iso(_now())}."
             )
         else:
+            attempt = min(server.alerts_sent_this_incident + 1, incident_cap)
             message = (
                 f"[PingSentry] ALERT: '{server.name}' ({server.address}) appears DOWN "
                 f"since {server.last_status_change_at}. Attempt "
-                f"{server.alerts_sent_this_incident + 1}/{server.max_alerts_per_incident}."
+                f"{attempt}/{incident_cap}."
             )
+
+        recipients = list(self.sms_config.to_numbers or [])
 
         def _worker():
             ok, info = sms_providers.send_sms(self.sms_config, message)
             with self._lock:
                 srv = self.servers.get(server.id)
                 if srv:
+                    if ok:
+                        srv.total_sms_sent += 1
                     if not recovery:
                         srv.alerts_sent_this_incident += 1
                         srv.alerts_sent_today += 1
@@ -341,9 +492,42 @@ class MonitorEngine:
                     self.persist_servers()
             level = "success" if ok else "error"
             self._log(server, level, f"SMS {'sent' if ok else 'FAILED'} for {server.name}: {info}")
+            self._record_notification(
+                server, kind=kind, channel="sms",
+                status="sent" if ok else "failed",
+                message=message,
+                detail=info if ok else "",
+                error="" if ok else info,
+                recipients=recipients,
+            )
             self._emit(EngineEvent("alert_sent", server_id=server.id, success=ok, info=info, recovery=recovery))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Notification records (bell + Notifications page)
+    # ------------------------------------------------------------------
+
+    def _record_notification(self, server: Server, kind: str, channel: str, status: str,
+                             message: str = "", detail: str = "", error: str = "",
+                             recipients=None):
+        rec = NotificationRecord(
+            timestamp=_iso(_now()),
+            server_id=server.id,
+            server_name=server.name,
+            address=server.address,
+            kind=kind,
+            channel=channel,
+            status=status,
+            message=message,
+            detail=detail,
+            error=error,
+            recipients=list(recipients or []),
+            read=False,
+        )
+        storage.append_notification(rec)
+        self._emit(EngineEvent("notification", notification=rec.to_dict()))
+        return rec
 
     # ------------------------------------------------------------------
     # Logging / eventing

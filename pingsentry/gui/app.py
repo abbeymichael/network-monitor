@@ -7,13 +7,15 @@ from typing import Optional
 import customtkinter as ctk
 
 from ..core.engine import MonitorEngine, EngineEvent
-from ..core.models import Server
+from ..core.models import Server, NotificationRecord, StatusEvent
 from ..core import storage
 from . import theme
-from .widgets import GhostButton
+from .widgets import GhostButton, NotificationBell, Toast
 from .dashboard_view import DashboardView
 from .settings_view import SettingsView
 from .logs_view import LogsView
+from .notifications_view import NotificationsView
+from .detail_view import DetailView
 from .server_dialog import ServerDialog
 
 APP_TITLE = "PingSentry — Uptime & SMS Alerts"
@@ -32,10 +34,14 @@ class PingSentryApp(ctk.CTk):
 
         self.engine = MonitorEngine()
         self._tray_icon = None
+        self._active_toasts = []
+        self._unread_count = 0
+        self._current_view = "dashboard"
 
         self._build_layout()
         self._refresh_dashboard()
         self._refresh_logs_initial()
+        self._refresh_notifications_initial()
 
         if self.engine.settings.launch_monitoring_on_start:
             self.start_monitoring()
@@ -72,6 +78,7 @@ class PingSentryApp(ctk.CTk):
         self.nav_buttons = {}
         for key, label, icon in [
             ("dashboard", "Dashboard", "\u25a4"),
+            ("notifications", "Notifications", "\U0001f514"),
             ("logs", "Activity Log", "\u2263"),
             ("settings", "Settings", "\u2699"),
         ]:
@@ -97,8 +104,20 @@ class PingSentryApp(ctk.CTk):
         status_box.grid_columnconfigure(1, weight=1)
 
         # Main content area ---------------------------------------------------
-        content = ctk.CTkFrame(self, fg_color=theme.BG_DARK, corner_radius=0)
-        content.grid(row=0, column=1, sticky="nsew")
+        outer = ctk.CTkFrame(self, fg_color=theme.BG_DARK, corner_radius=0)
+        outer.grid(row=0, column=1, sticky="nsew")
+        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_rowconfigure(1, weight=1)
+
+        # Top bar (holds the notification bell) --------------------------------
+        topbar = ctk.CTkFrame(outer, fg_color="transparent", height=52)
+        topbar.grid(row=0, column=0, sticky="ew", padx=26, pady=(18, 0))
+        topbar.grid_columnconfigure(0, weight=1)
+        self.bell = NotificationBell(topbar, on_click=lambda: self._show_view("notifications"))
+        self.bell.grid(row=0, column=1, sticky="e")
+
+        content = ctk.CTkFrame(outer, fg_color=theme.BG_DARK, corner_radius=0)
+        content.grid(row=1, column=0, sticky="nsew")
         content.grid_columnconfigure(0, weight=1)
         content.grid_rowconfigure(0, weight=1)
         self.content = content
@@ -111,8 +130,20 @@ class PingSentryApp(ctk.CTk):
             on_delete_server=self._delete_server,
             on_check_now=self._check_now,
             on_toggle_enabled=self._toggle_server_enabled,
+            on_open_detail=self._open_detail,
         )
         self.views["dashboard"] = self.dashboard_view
+
+        self.notifications_view = NotificationsView(content, on_clear=self._clear_notifications)
+        self.views["notifications"] = self.notifications_view
+
+        self.detail_view = DetailView(
+            content,
+            on_back=lambda: self._show_view("dashboard"),
+            on_check_now=self._check_now,
+            on_edit=self._open_edit_dialog,
+        )
+        self.views["detail"] = self.detail_view
 
         self.logs_view = LogsView(content, on_clear=self._clear_logs)
         self.views["logs"] = self.logs_view
@@ -123,6 +154,7 @@ class PingSentryApp(ctk.CTk):
             app_settings=self.engine.settings,
             on_save_sms=self._save_sms_config,
             on_save_app=self._save_app_settings,
+            on_test_result=self._on_test_sms_result,
         )
         self.views["settings"] = self.settings_view
 
@@ -132,12 +164,18 @@ class PingSentryApp(ctk.CTk):
         self._show_view("dashboard")
 
     def _show_view(self, key: str):
-        for k, v in self.views.items():
-            if k == key:
-                v.tkraise()
-                self.nav_buttons[k].configure(fg_color=theme.ACCENT_SOFT, text_color=theme.TEXT)
+        self._current_view = key
+        self.views[key].tkraise()
+        # Highlight the matching sidebar button (detail has no nav button; keep
+        # the Dashboard entry highlighted while drilled into a target).
+        highlight_key = "dashboard" if key == "detail" else key
+        for k, btn in self.nav_buttons.items():
+            if k == highlight_key:
+                btn.configure(fg_color=theme.ACCENT_SOFT, text_color=theme.TEXT)
             else:
-                self.nav_buttons[k].configure(fg_color="transparent", text_color=theme.TEXT_DIM)
+                btn.configure(fg_color="transparent", text_color=theme.TEXT_DIM)
+        if key == "notifications":
+            self._mark_notifications_read()
 
     # ------------------------------------------------------------------
     # Dashboard <-> engine actions
@@ -149,6 +187,89 @@ class PingSentryApp(ctk.CTk):
     def _refresh_logs_initial(self):
         entries = storage.load_recent_logs(limit=300)
         self.logs_view.set_entries(entries)
+
+    def _refresh_notifications_initial(self):
+        records = storage.load_notifications(limit=500)
+        self.notifications_view.set_records(records)
+        self._unread_count = sum(1 for r in records if not r.read)
+        self.bell.set_count(self._unread_count)
+
+    # ------------------------------------------------------------------
+    # Detail page navigation
+    # ------------------------------------------------------------------
+
+    def _open_detail(self, server: Server):
+        fresh = self.engine.get_server(server.id) or server
+        self.detail_view.load(fresh)
+        self._show_view("detail")
+
+    # ------------------------------------------------------------------
+    # Notifications
+    # ------------------------------------------------------------------
+
+    def _clear_notifications(self):
+        storage.clear_notifications()
+        self._unread_count = 0
+        self.bell.set_count(0)
+
+    def _on_test_sms_result(self, ok: bool, info: str):
+        # Record the manual test result so it appears in the bell + page.
+        self.engine.record_test_notification(ok, info)
+
+    def _mark_notifications_read(self):
+        if self._unread_count > 0:
+            storage.mark_notifications_read()
+        self._unread_count = 0
+        self.bell.set_count(0)
+
+    def _handle_notification(self, rec: NotificationRecord):
+        # Add to the notifications page
+        self.notifications_view.prepend_record(rec)
+        # Bump unread + bell
+        if self._current_view != "notifications":
+            self._unread_count += 1
+            self.bell.set_count(self._unread_count)
+            self.bell.flash()
+        # In-app toast (respect the setting)
+        if self.engine.settings.in_app_notifications:
+            self._show_toast_for(rec)
+
+    def _toast_text(self, rec: NotificationRecord):
+        if rec.kind == "recovery":
+            return ("Recovered", f"{rec.server_name} is back UP.", "recovery")
+        if rec.kind == "test":
+            if rec.status == "sent":
+                return ("Test SMS sent", "Your SMS configuration is working.", "test")
+            return ("Test SMS failed", rec.error or "Unknown error.", "error")
+        # down / info
+        if rec.status == "sent":
+            return ("Alert sent", f"{rec.server_name} is DOWN — SMS delivered.", "down")
+        if rec.status == "failed":
+            return ("SMS FAILED", f"{rec.server_name}: {rec.error or 'send failed'}", "error")
+        if rec.status == "suppressed":
+            return ("Alert suppressed", f"{rec.server_name}: {rec.detail}", "info")
+        return (rec.server_name or "Notification", rec.message or rec.detail, "info")
+
+    def _show_toast_for(self, rec: NotificationRecord):
+        title, message, kind = self._toast_text(rec)
+        toast = Toast(self, title, message, kind=kind,
+                      on_click=lambda: self._show_view("notifications"))
+        self._active_toasts.append(toast)
+        self._reposition_toasts()
+        # prune destroyed ones after their lifetime
+        self.after(5600, self._prune_toasts)
+
+    def _prune_toasts(self):
+        self._active_toasts = [t for t in self._active_toasts if t.winfo_exists()]
+        self._reposition_toasts()
+
+    def _reposition_toasts(self):
+        self._active_toasts = [t for t in self._active_toasts if t.winfo_exists()]
+        y = 70
+        for t in self._active_toasts[-4:]:  # show at most the newest 4
+            t.place(relx=1.0, x=-20, y=y, anchor="ne")
+            t.update_idletasks()
+            y += t.winfo_reqheight() + 10
 
     def _open_add_dialog(self):
         ServerDialog(self, None, on_save=self._save_new_server)
@@ -236,10 +357,49 @@ class PingSentryApp(ctk.CTk):
         for ev in events:
             if ev.kind in ("check", "status_change", "alert_sent"):
                 needs_dash_refresh = True
+
+            if ev.kind == "check":
+                sid = ev.payload.get("server_id")
+                if sid:
+                    # Pulse the heartbeat to prove the check landed.
+                    self.dashboard_view.beat_server(sid)
+                    srv = self.engine.get_server(sid)
+                    if srv is not None:
+                        self.detail_view.note_check(
+                            srv, ev.payload.get("latency_ms"),
+                            bool(ev.payload.get("success")),
+                        )
+
+            if ev.kind == "status_change":
+                sid = ev.payload.get("server_id")
+                srv = self.engine.get_server(sid) if sid else None
+                if srv is not None:
+                    self.detail_view.refresh(srv)
+
             if ev.kind == "log":
                 self.logs_view.prepend_entry(ev.payload.get("entry", {}))
+
+            if ev.kind == "notification":
+                try:
+                    rec = NotificationRecord.from_dict(ev.payload.get("notification", {}))
+                    self._handle_notification(rec)
+                except Exception:
+                    pass
+
+            if ev.kind == "status_event":
+                try:
+                    se = StatusEvent.from_dict(ev.payload.get("event", {}))
+                    self.detail_view.add_timeline_event(se)
+                except Exception:
+                    pass
+
         if needs_dash_refresh:
             self._refresh_dashboard()
+            # keep detail totals fresh while open
+            if self._current_view == "detail" and self.detail_view.server:
+                srv = self.engine.get_server(self.detail_view.server.id)
+                if srv is not None:
+                    self.detail_view.refresh(srv)
         self.after(POLL_MS, self._poll_engine_events)
 
     # ------------------------------------------------------------------

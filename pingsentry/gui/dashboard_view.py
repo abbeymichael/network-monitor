@@ -20,6 +20,7 @@ class DashboardView(ctk.CTkFrame):
         on_delete_server: Callable[[Server], None],
         on_check_now: Callable[[Server], None],
         on_toggle_enabled: Callable[[Server, bool], None],
+        on_open_detail: Callable[[Server], None] = None,
         **kwargs,
     ):
         super().__init__(master, fg_color="transparent", **kwargs)
@@ -28,6 +29,7 @@ class DashboardView(ctk.CTkFrame):
         self.on_delete_server = on_delete_server
         self.on_check_now = on_check_now
         self.on_toggle_enabled = on_toggle_enabled
+        self.on_open_detail = on_open_detail
 
         self.cards: Dict[str, ServerCard] = {}
 
@@ -86,6 +88,7 @@ class DashboardView(ctk.CTkFrame):
                     on_delete=self.on_delete_server,
                     on_check_now=self.on_check_now,
                     on_toggle_enabled=self.on_toggle_enabled,
+                    on_open_detail=self.on_open_detail,
                 )
                 card.pack(fill="x", pady=6)
                 self.cards[server.id] = card
@@ -97,6 +100,12 @@ class DashboardView(ctk.CTkFrame):
                 del self.cards[sid]
 
         self._update_stats(servers)
+
+    def beat_server(self, server_id: str):
+        """Flash a server's heartbeat when a check completes."""
+        card = self.cards.get(server_id)
+        if card:
+            card.beat()
 
     def _update_stats(self, servers: List[Server]):
         total = len(servers)
