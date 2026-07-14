@@ -10,6 +10,29 @@ from . import theme
 from .widgets import Badge, GhostButton
 
 
+def _method_label(server: Server) -> str:
+    """Human-readable summary of a server's check method for card display."""
+    method = server.check_method.value if isinstance(server.check_method, CheckMethod) else server.check_method
+    if method == CheckMethod.PING.value:
+        return "PING"
+    if method == CheckMethod.TCP_PORT.value:
+        return f"TCP :{server.port}"
+    if method == CheckMethod.HTTP.value:
+        return f"HTTP ({server.http_method or 'GET'})"
+    if method == CheckMethod.DNS.value:
+        return f"DNS ({(server.dns_record_type or 'A').upper()})"
+    return method.upper() if method else "?"
+
+
+def _display_address(server: Server) -> str:
+    """Address text to show on the card (falls back to the HTTP URL if the
+    plain address field was left blank for an HTTP check)."""
+    method = server.check_method.value if isinstance(server.check_method, CheckMethod) else server.check_method
+    if not server.address and method == CheckMethod.HTTP.value and server.http_url:
+        return server.http_url
+    return server.address
+
+
 class ServerCard(ctk.CTkFrame):
     def __init__(
         self,
@@ -43,9 +66,9 @@ class ServerCard(ctk.CTkFrame):
         )
         self.name_label.pack(anchor="w")
 
-        method_txt = "PING" if server.check_method == CheckMethod.PING or server.check_method == "ping" else f"TCP :{server.port}"
+        method_txt = _method_label(server)
         self.detail_label = ctk.CTkLabel(
-            self, text=f"{server.address}  ·  {method_txt}  ·  every {server.interval_seconds}s",
+            self, text=f"{_display_address(server)}  ·  {method_txt}  ·  every {server.interval_seconds}s",
             font=theme.font(12), text_color=theme.TEXT_DIM, anchor="w",
         )
         self.detail_label.grid(row=1, column=1, sticky="ew", pady=(2, 14))
@@ -104,8 +127,8 @@ class ServerCard(ctk.CTkFrame):
         self.server = server
         self.badge.set_status(server.status if server.enabled else "paused")
         self.name_label.configure(text=server.name)
-        method_txt = "PING" if server.check_method == CheckMethod.PING or server.check_method == "ping" else f"TCP :{server.port}"
-        self.detail_label.configure(text=f"{server.address}  ·  {method_txt}  ·  every {server.interval_seconds}s")
+        method_txt = _method_label(server)
+        self.detail_label.configure(text=f"{_display_address(server)}  ·  {method_txt}  ·  every {server.interval_seconds}s")
         self.latency_label.configure(text=self._latency_text())
         self.checked_label.configure(text=self._checked_text())
         if server.enabled and not self.enabled_switch.get():
