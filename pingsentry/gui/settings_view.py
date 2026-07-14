@@ -56,7 +56,7 @@ class SettingsView(ctk.CTkFrame):
 
     # ------------------------------------------------------------------
     def _build_sms_section(self):
-        card = self._card("📱  SMS Gateway")
+        card = self._card("\u260e  SMS Gateway")
 
         body = ctk.CTkFrame(card, fg_color="transparent")
         body.pack(fill="x", padx=20, pady=(0, 8))
@@ -210,7 +210,7 @@ class SettingsView(ctk.CTkFrame):
 
     # ------------------------------------------------------------------
     def _build_app_section(self):
-        card = self._card("⚙️  App Preferences")
+        card = self._card("\u2699  App Preferences")
         body = ctk.CTkFrame(card, fg_color="transparent")
         body.pack(fill="x", padx=20, pady=(0, 8))
 

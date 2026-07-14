@@ -60,17 +60,20 @@ class PingSentryApp(ctk.CTk):
 
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
         brand.pack(fill="x", padx=20, pady=(26, 30))
-        ctk.CTkLabel(brand, text="📡", font=theme.title_font(24)).pack(side="left")
+        logo_badge = ctk.CTkFrame(brand, width=36, height=36, corner_radius=10, fg_color=theme.ACCENT)
+        logo_badge.pack(side="left")
+        logo_badge.pack_propagate(False)
+        ctk.CTkLabel(logo_badge, text="\u25c9", font=theme.title_font(17), text_color="#ffffff").place(relx=0.5, rely=0.5, anchor="center")
         title_box = ctk.CTkFrame(brand, fg_color="transparent")
-        title_box.pack(side="left", padx=(8, 0))
+        title_box.pack(side="left", padx=(10, 0))
         ctk.CTkLabel(title_box, text="PingSentry", font=theme.title_font(17, "bold")).pack(anchor="w")
         ctk.CTkLabel(title_box, text="Uptime Monitor", font=theme.font(11), text_color=theme.MUTED).pack(anchor="w")
 
         self.nav_buttons = {}
         for key, label, icon in [
-            ("dashboard", "Dashboard", "🏠"),
-            ("logs", "Activity Log", "📜"),
-            ("settings", "Settings", "⚙️"),
+            ("dashboard", "Dashboard", "\u25a4"),
+            ("logs", "Activity Log", "\u2263"),
+            ("settings", "Settings", "\u2699"),
         ]:
             btn = ctk.CTkButton(
                 sidebar, text=f"  {icon}   {label}", anchor="w",
