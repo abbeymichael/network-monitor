@@ -11,8 +11,55 @@ from . import theme
 from .widgets import PrimaryButton, GhostButton, SectionLabel
 
 
-PROVIDER_KEYS = ["twilio", "vonage", "textbelt", "generic_webhook", "none"]
+PROVIDER_KEYS = ["twilio", "vonage", "textbelt", "txtconnect", "custom", "none"]
 PROVIDER_DISPLAY = [sms_providers.PROVIDER_LABELS[k] for k in PROVIDER_KEYS]
+
+AUTH_TYPE_KEYS = ["none", "bearer", "basic", "api_key_header", "api_key_query"]
+AUTH_TYPE_DISPLAY = {
+    "none": "No Authentication",
+    "bearer": "Bearer Token",
+    "basic": "Basic Auth (username/password)",
+    "api_key_header": "API Key in Header",
+    "api_key_query": "API Key in Query Parameter",
+}
+
+CONTENT_TYPE_KEYS = ["auto", "json", "form"]
+CONTENT_TYPE_DISPLAY = {
+    "auto": "Auto-detect (from body template)",
+    "json": "JSON",
+    "form": "Form (x-www-form-urlencoded)",
+}
+
+SUCCESS_CHECK_KEYS = ["status_code", "json_field"]
+SUCCESS_CHECK_DISPLAY = {
+    "status_code": "Any 2xx HTTP status code",
+    "json_field": "Specific field in JSON response",
+}
+
+
+def _display_to_key_in(display_value: str, mapping: dict) -> str:
+    for k, v in mapping.items():
+        if v == display_value:
+            return k
+    return next(iter(mapping))
+
+
+def _dict_to_lines(d: dict) -> str:
+    return "\n".join(f"{k}: {v}" for k, v in (d or {}).items())
+
+
+def _lines_to_dict(text: str, sep: str = ":") -> dict:
+    out = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or sep not in line:
+            continue
+        k, v = line.split(sep, 1)
+        k = k.strip()
+        v = v.strip()
+        if k:
+            out[k] = v
+    return out
 
 
 class SettingsView(ctk.CTkFrame):
@@ -133,28 +180,196 @@ class SettingsView(ctk.CTkFrame):
         self.textbelt_key_entry.pack(fill="x", pady=(0, 4))
         self.frames["textbelt"] = f
 
-        # Generic webhook
+        # TxtConnect
         f = ctk.CTkFrame(self.cred_container, fg_color="transparent")
-        SectionLabel(f, text="Webhook URL").pack(anchor="w", pady=(0, 4))
-        self.webhook_url_entry = ctk.CTkEntry(f, placeholder_text="https://your-sms-gateway.com/api/send")
-        self.webhook_url_entry.insert(0, self.sms_config.webhook_url)
-        self.webhook_url_entry.pack(fill="x", pady=(0, 10))
-        SectionLabel(f, text="HTTP Method").pack(anchor="w", pady=(0, 4))
-        self.webhook_method_menu = ctk.CTkOptionMenu(f, values=["POST", "GET", "PUT"],
-                                                        fg_color=theme.BG_PANEL, button_color=theme.ACCENT,
-                                                        button_hover_color=theme.ACCENT_HOVER)
-        self.webhook_method_menu.set(self.sms_config.webhook_method or "POST")
-        self.webhook_method_menu.pack(fill="x", pady=(0, 10))
-        SectionLabel(f, text="Body Template (use {to} and {message} placeholders)").pack(anchor="w", pady=(0, 4))
-        self.webhook_body_entry = ctk.CTkTextbox(f, height=70, fg_color=theme.BG_PANEL)
-        self.webhook_body_entry.insert("1.0", self.sms_config.webhook_body_template)
-        self.webhook_body_entry.pack(fill="x", pady=(0, 4))
-        self.frames["generic_webhook"] = f
+        SectionLabel(f, text="TxtConnect API Secret (Bearer Token)").pack(anchor="w", pady=(0, 4))
+        self.txtconnect_secret_entry = ctk.CTkEntry(f, placeholder_text="your API secret", show="•")
+        self.txtconnect_secret_entry.insert(0, self.sms_config.txtconnect_api_secret)
+        self.txtconnect_secret_entry.pack(fill="x", pady=(0, 10))
+        SectionLabel(f, text="API Endpoint").pack(anchor="w", pady=(0, 4))
+        self.txtconnect_endpoint_entry = ctk.CTkEntry(f, placeholder_text="https://api.txtconnect.net/dev/api/sms/send")
+        self.txtconnect_endpoint_entry.insert(0, self.sms_config.txtconnect_endpoint)
+        self.txtconnect_endpoint_entry.pack(fill="x", pady=(0, 10))
+        self.txtconnect_unicode_switch = ctk.CTkSwitch(
+            f, text="Send as unicode SMS", progress_color=theme.ACCENT, font=theme.font(13)
+        )
+        if self.sms_config.txtconnect_unicode:
+            self.txtconnect_unicode_switch.select()
+        self.txtconnect_unicode_switch.pack(anchor="w", pady=(0, 4))
+        hint = ctk.CTkLabel(
+            f, text="Uses the 'Sender ID / From Number' field below as the sender name.",
+            font=theme.font(11), text_color=theme.MUTED, anchor="w",
+        )
+        hint.pack(anchor="w", pady=(4, 4))
+        self.frames["txtconnect"] = f
+
+        # Custom provider - fully configurable HTTP SMS gateway
+        f = ctk.CTkFrame(self.cred_container, fg_color="transparent")
+        self._build_custom_provider_frame(f)
+        self.frames["custom"] = f
 
         # None
         f = ctk.CTkFrame(self.cred_container, fg_color="transparent")
         ctk.CTkLabel(f, text="SMS alerts are disabled.", text_color=theme.MUTED, font=theme.font(12)).pack(anchor="w")
         self.frames["none"] = f
+
+    def _build_custom_provider_frame(self, f):
+        cfg = self.sms_config
+
+        ctk.CTkLabel(
+            f, text="Connect to any custom HTTP SMS gateway by configuring the request below.",
+            font=theme.font(11), text_color=theme.MUTED, anchor="w", justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+
+        SectionLabel(f, text="Request URL").pack(anchor="w", pady=(0, 4))
+        self.custom_url_entry = ctk.CTkEntry(f, placeholder_text="https://your-sms-gateway.com/api/send")
+        self.custom_url_entry.insert(0, cfg.webhook_url)
+        self.custom_url_entry.pack(fill="x", pady=(0, 10))
+
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", pady=(0, 10))
+        row.grid_columnconfigure((0, 1), weight=1)
+        col1 = ctk.CTkFrame(row, fg_color="transparent")
+        col1.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        SectionLabel(col1, text="HTTP Method").pack(anchor="w", pady=(0, 4))
+        self.custom_method_menu = ctk.CTkOptionMenu(
+            col1, values=["POST", "GET", "PUT", "PATCH"],
+            fg_color=theme.BG_PANEL, button_color=theme.ACCENT, button_hover_color=theme.ACCENT_HOVER,
+        )
+        self.custom_method_menu.set(cfg.webhook_method or "POST")
+        self.custom_method_menu.pack(fill="x")
+        col2 = ctk.CTkFrame(row, fg_color="transparent")
+        col2.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        SectionLabel(col2, text="Body Content-Type").pack(anchor="w", pady=(0, 4))
+        self.custom_content_type_menu = ctk.CTkOptionMenu(
+            col2, values=[CONTENT_TYPE_DISPLAY[k] for k in CONTENT_TYPE_KEYS],
+            fg_color=theme.BG_PANEL, button_color=theme.ACCENT, button_hover_color=theme.ACCENT_HOVER,
+        )
+        self.custom_content_type_menu.set(CONTENT_TYPE_DISPLAY.get(cfg.webhook_content_type, CONTENT_TYPE_DISPLAY["auto"]))
+        self.custom_content_type_menu.pack(fill="x")
+
+        SectionLabel(f, text="Body Template (use {to}, {message}, {from} placeholders)").pack(anchor="w", pady=(0, 4))
+        self.custom_body_entry = ctk.CTkTextbox(f, height=64, fg_color=theme.BG_PANEL)
+        self.custom_body_entry.insert("1.0", cfg.webhook_body_template)
+        self.custom_body_entry.pack(fill="x", pady=(0, 10))
+
+        SectionLabel(f, text="Extra Headers (one per line: Name: Value)").pack(anchor="w", pady=(0, 4))
+        self.custom_headers_entry = ctk.CTkTextbox(f, height=54, fg_color=theme.BG_PANEL)
+        self.custom_headers_entry.insert("1.0", _dict_to_lines(cfg.webhook_headers))
+        self.custom_headers_entry.pack(fill="x", pady=(0, 10))
+
+        SectionLabel(f, text="Extra Query Parameters (one per line: name=value)").pack(anchor="w", pady=(0, 4))
+        self.custom_params_entry = ctk.CTkTextbox(f, height=54, fg_color=theme.BG_PANEL)
+        self.custom_params_entry.insert("1.0", _dict_to_lines(cfg.webhook_query_params))
+        self.custom_params_entry.pack(fill="x", pady=(0, 10))
+
+        divider = ctk.CTkFrame(f, height=1, fg_color=theme.BORDER)
+        divider.pack(fill="x", pady=10)
+
+        SectionLabel(f, text="Authentication").pack(anchor="w", pady=(0, 4))
+        self.custom_auth_menu = ctk.CTkOptionMenu(
+            f, values=[AUTH_TYPE_DISPLAY[k] for k in AUTH_TYPE_KEYS], command=self._on_custom_auth_change,
+            fg_color=theme.BG_PANEL, button_color=theme.ACCENT, button_hover_color=theme.ACCENT_HOVER,
+        )
+        self.custom_auth_menu.set(AUTH_TYPE_DISPLAY.get(cfg.webhook_auth_type, AUTH_TYPE_DISPLAY["none"]))
+        self.custom_auth_menu.pack(fill="x", pady=(0, 10))
+
+        self.custom_auth_frames = {}
+
+        # bearer / api_key_header share the "token + header name" shape
+        for key, token_label, header_default in (
+            ("bearer", "Bearer Token", "Authorization"),
+            ("api_key_header", "API Key Value", "X-API-Key"),
+        ):
+            af = ctk.CTkFrame(f, fg_color="transparent")
+            SectionLabel(af, text=token_label).pack(anchor="w", pady=(0, 4))
+            token_entry = ctk.CTkEntry(af, placeholder_text=token_label, show="•")
+            token_entry.insert(0, cfg.webhook_auth_token)
+            token_entry.pack(fill="x", pady=(0, 8))
+            SectionLabel(af, text="Header Name").pack(anchor="w", pady=(0, 4))
+            header_entry = ctk.CTkEntry(af, placeholder_text=header_default)
+            header_entry.insert(0, cfg.webhook_auth_header_name or header_default)
+            header_entry.pack(fill="x", pady=(0, 4))
+            self.custom_auth_frames[key] = af
+            if key == "bearer":
+                self.custom_bearer_token_entry = token_entry
+                self.custom_bearer_header_entry = header_entry
+            else:
+                self.custom_apikey_header_token_entry = token_entry
+                self.custom_apikey_header_name_entry = header_entry
+
+        af = ctk.CTkFrame(f, fg_color="transparent")
+        SectionLabel(af, text="API Key Value").pack(anchor="w", pady=(0, 4))
+        self.custom_apikey_query_token_entry = ctk.CTkEntry(af, placeholder_text="API key", show="•")
+        self.custom_apikey_query_token_entry.insert(0, cfg.webhook_auth_token)
+        self.custom_apikey_query_token_entry.pack(fill="x", pady=(0, 8))
+        SectionLabel(af, text="Query Parameter Name").pack(anchor="w", pady=(0, 4))
+        self.custom_apikey_query_name_entry = ctk.CTkEntry(af, placeholder_text="api_key")
+        self.custom_apikey_query_name_entry.insert(0, cfg.webhook_auth_query_name or "api_key")
+        self.custom_apikey_query_name_entry.pack(fill="x", pady=(0, 4))
+        self.custom_auth_frames["api_key_query"] = af
+
+        af = ctk.CTkFrame(f, fg_color="transparent")
+        SectionLabel(af, text="Username").pack(anchor="w", pady=(0, 4))
+        self.custom_basic_user_entry = ctk.CTkEntry(af, placeholder_text="username")
+        self.custom_basic_user_entry.insert(0, cfg.webhook_basic_username)
+        self.custom_basic_user_entry.pack(fill="x", pady=(0, 8))
+        SectionLabel(af, text="Password").pack(anchor="w", pady=(0, 4))
+        self.custom_basic_pass_entry = ctk.CTkEntry(af, placeholder_text="password", show="•")
+        self.custom_basic_pass_entry.insert(0, cfg.webhook_basic_password)
+        self.custom_basic_pass_entry.pack(fill="x", pady=(0, 4))
+        self.custom_auth_frames["basic"] = af
+
+        self.custom_auth_frames["none"] = ctk.CTkFrame(f, fg_color="transparent")
+
+        self.custom_auth_container = f
+        self._show_custom_auth_frame(cfg.webhook_auth_type or "none")
+
+        divider2 = ctk.CTkFrame(f, height=1, fg_color=theme.BORDER)
+        divider2.pack(fill="x", pady=10)
+
+        SectionLabel(f, text="Success Detection").pack(anchor="w", pady=(0, 4))
+        self.custom_success_menu = ctk.CTkOptionMenu(
+            f, values=[SUCCESS_CHECK_DISPLAY[k] for k in SUCCESS_CHECK_KEYS], command=self._on_custom_success_change,
+            fg_color=theme.BG_PANEL, button_color=theme.ACCENT, button_hover_color=theme.ACCENT_HOVER,
+        )
+        self.custom_success_menu.set(SUCCESS_CHECK_DISPLAY.get(cfg.webhook_success_check, SUCCESS_CHECK_DISPLAY["status_code"]))
+        self.custom_success_menu.pack(fill="x", pady=(0, 10))
+
+        self.custom_json_field_frame = ctk.CTkFrame(f, fg_color="transparent")
+        row3 = ctk.CTkFrame(self.custom_json_field_frame, fg_color="transparent")
+        row3.pack(fill="x")
+        row3.grid_columnconfigure((0, 1), weight=1)
+        colA = ctk.CTkFrame(row3, fg_color="transparent")
+        colA.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        SectionLabel(colA, text="JSON Field Path (e.g. data.status)").pack(anchor="w", pady=(0, 4))
+        self.custom_success_path_entry = ctk.CTkEntry(colA, placeholder_text="data.status")
+        self.custom_success_path_entry.insert(0, cfg.webhook_success_json_path)
+        self.custom_success_path_entry.pack(fill="x")
+        colB = ctk.CTkFrame(row3, fg_color="transparent")
+        colB.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        SectionLabel(colB, text="Expected Value").pack(anchor="w", pady=(0, 4))
+        self.custom_success_value_entry = ctk.CTkEntry(colB, placeholder_text="success")
+        self.custom_success_value_entry.insert(0, cfg.webhook_success_json_value)
+        self.custom_success_value_entry.pack(fill="x")
+        if (cfg.webhook_success_check or "status_code") == "json_field":
+            self.custom_json_field_frame.pack(fill="x", pady=(0, 4))
+
+    def _on_custom_auth_change(self, display_value: str):
+        key = _display_to_key_in(display_value, AUTH_TYPE_DISPLAY)
+        self._show_custom_auth_frame(key)
+
+    def _show_custom_auth_frame(self, key: str):
+        for frame in self.custom_auth_frames.values():
+            frame.pack_forget()
+        self.custom_auth_frames.get(key, self.custom_auth_frames["none"]).pack(fill="x", pady=(0, 4))
+
+    def _on_custom_success_change(self, display_value: str):
+        key = _display_to_key_in(display_value, SUCCESS_CHECK_DISPLAY)
+        if key == "json_field":
+            self.custom_json_field_frame.pack(fill="x", pady=(0, 4))
+        else:
+            self.custom_json_field_frame.pack_forget()
 
     def _show_credential_frame(self, provider_key: str):
         for key, frame in self.frames.items():
@@ -176,6 +391,27 @@ class SettingsView(ctk.CTkFrame):
     def _collect_sms_config(self) -> SmsProviderConfig:
         provider_key = self._display_to_key(self.provider_menu.get())
         to_numbers = [n.strip() for n in self.to_entry.get().split(",") if n.strip()]
+
+        auth_key = _display_to_key_in(self.custom_auth_menu.get(), AUTH_TYPE_DISPLAY)
+        if auth_key == "bearer":
+            auth_token = self.custom_bearer_token_entry.get().strip()
+            auth_header_name = self.custom_bearer_header_entry.get().strip() or "Authorization"
+            auth_query_name = "api_key"
+        elif auth_key == "api_key_header":
+            auth_token = self.custom_apikey_header_token_entry.get().strip()
+            auth_header_name = self.custom_apikey_header_name_entry.get().strip() or "X-API-Key"
+            auth_query_name = "api_key"
+        elif auth_key == "api_key_query":
+            auth_token = self.custom_apikey_query_token_entry.get().strip()
+            auth_header_name = "Authorization"
+            auth_query_name = self.custom_apikey_query_name_entry.get().strip() or "api_key"
+        else:
+            auth_token = ""
+            auth_header_name = "Authorization"
+            auth_query_name = "api_key"
+
+        success_key = _display_to_key_in(self.custom_success_menu.get(), SUCCESS_CHECK_DISPLAY)
+
         cfg = SmsProviderConfig(
             provider=provider_key,
             from_number=self.from_entry.get().strip(),
@@ -185,10 +421,24 @@ class SettingsView(ctk.CTkFrame):
             vonage_api_key=self.vonage_key_entry.get().strip(),
             vonage_api_secret=self.vonage_secret_entry.get().strip(),
             textbelt_api_key=self.textbelt_key_entry.get().strip(),
-            webhook_url=self.webhook_url_entry.get().strip(),
-            webhook_method=self.webhook_method_menu.get(),
-            webhook_headers=self.sms_config.webhook_headers,
-            webhook_body_template=self.webhook_body_entry.get("1.0", "end").strip(),
+            txtconnect_api_secret=self.txtconnect_secret_entry.get().strip(),
+            txtconnect_endpoint=self.txtconnect_endpoint_entry.get().strip() or "https://api.txtconnect.net/dev/api/sms/send",
+            txtconnect_unicode=bool(self.txtconnect_unicode_switch.get()),
+            webhook_url=self.custom_url_entry.get().strip(),
+            webhook_method=self.custom_method_menu.get(),
+            webhook_content_type=_display_to_key_in(self.custom_content_type_menu.get(), CONTENT_TYPE_DISPLAY),
+            webhook_auth_type=auth_key,
+            webhook_auth_token=auth_token,
+            webhook_auth_header_name=auth_header_name,
+            webhook_auth_query_name=auth_query_name,
+            webhook_basic_username=self.custom_basic_user_entry.get().strip(),
+            webhook_basic_password=self.custom_basic_pass_entry.get().strip(),
+            webhook_headers=_lines_to_dict(self.custom_headers_entry.get("1.0", "end")),
+            webhook_query_params=_lines_to_dict(self.custom_params_entry.get("1.0", "end"), sep="="),
+            webhook_body_template=self.custom_body_entry.get("1.0", "end").strip(),
+            webhook_success_check=success_key,
+            webhook_success_json_path=self.custom_success_path_entry.get().strip(),
+            webhook_success_json_value=self.custom_success_value_entry.get().strip(),
         )
         return cfg
 
