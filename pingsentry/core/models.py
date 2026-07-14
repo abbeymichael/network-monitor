@@ -15,6 +15,8 @@ from typing import Optional, List, Dict, Any
 class CheckMethod(str, Enum):
     PING = "ping"          # ICMP echo
     TCP_PORT = "tcp_port"  # TCP connect() check
+    HTTP = "http"          # HTTP/HTTPS request (websites & APIs)
+    DNS = "dns"            # DNS lookup (A/AAAA/CNAME/MX/TXT/NS...)
 
 
 class ServerStatus(str, Enum):
@@ -33,6 +35,20 @@ class Server:
     address: str = ""                       # IP or domain
     check_method: CheckMethod = CheckMethod.PING
     port: int = 443                         # used when check_method == TCP_PORT
+
+    # HTTP/HTTPS check options (used when check_method == HTTP)
+    http_url: str = ""                      # full URL, e.g. https://example.com/health
+    http_method: str = "GET"                # GET | HEAD | POST
+    http_expected_status_min: int = 200     # inclusive lower bound of "healthy" status codes
+    http_expected_status_max: int = 399     # inclusive upper bound of "healthy" status codes
+    http_body_contains: str = ""            # optional substring the response body must contain
+    http_verify_tls: bool = True            # verify SSL certificates
+
+    # DNS lookup check options (used when check_method == DNS)
+    dns_record_type: str = "A"              # A | AAAA | CNAME | MX | TXT | NS
+    dns_resolver: str = ""                  # optional custom DNS server IP; blank = system default
+    dns_expected_value: str = ""            # optional substring the resolved record(s) must contain
+
     interval_seconds: int = 60              # how often to check
     timeout_seconds: int = 5                # per-attempt timeout
     failures_before_alert: int = 2          # consecutive failed checks before "down"

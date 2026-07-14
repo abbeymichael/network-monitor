@@ -5,8 +5,16 @@ and texts you when something goes down (and again when it recovers).
 
 ## Features
 - Add any number of servers by **IP or domain**.
-- Per-server check method: **ICMP Ping** or **TCP Port Check** (use TCP when
-  a provider/firewall blocks ICMP but the service is actually healthy).
+- Per-server check method — pick whichever fits the target:
+  - **ICMP Ping** — classic ping, great for servers/routers/devices.
+  - **TCP Port** — raw connect to a port (22, 80, 443, 3306, ...); use this
+    when a firewall blocks ICMP but the service itself is reachable.
+  - **HTTP / HTTPS** — request a URL and validate the status code (and
+    optionally the response body); best for websites and APIs, since "the
+    port is open" isn't the same as "the app is actually healthy".
+  - **DNS Lookup** — resolve an A/AAAA/CNAME/MX/TXT/NS record (optionally
+    against a custom resolver, with an optional expected-value check); useful
+    for monitoring domain/DNS health independently of the service.
 - Configurable check interval, timeout, and "failures before alert" threshold
   per server.
 - SMS escalation: cap on repeat "still down" alerts per outage, minutes
@@ -30,7 +38,11 @@ python3 main.py
 
 ## Notes
 - `ping` must be present on the system (standard on Linux/macOS/Windows).
-- TCP port checks require only outbound network access, no admin rights.
+- TCP port and HTTP/HTTPS checks require only outbound network access, no
+  admin rights.
+- DNS lookups use the `dnspython` package when available (installed via
+  `requirements.txt`); if it's missing, a limited built-in fallback still
+  handles A/AAAA lookups via the system resolver.
 - Data is stored per-OS user data dir (servers, settings, encrypted SMS
   credentials, activity log).
 

@@ -185,8 +185,25 @@ class MonitorEngine:
             method = server.check_method
             port = server.port
             timeout_seconds = server.timeout_seconds
+            http_url = server.http_url
+            http_method = server.http_method
+            http_expected_status_min = server.http_expected_status_min
+            http_expected_status_max = server.http_expected_status_max
+            http_body_contains = server.http_body_contains
+            http_verify_tls = server.http_verify_tls
+            dns_record_type = server.dns_record_type
+            dns_resolver = server.dns_resolver
+            dns_expected_value = server.dns_expected_value
 
-        result = check_target(address, method, port=port, timeout_seconds=timeout_seconds)
+        result = check_target(
+            address, method, port=port, timeout_seconds=timeout_seconds,
+            http_url=http_url, http_method=http_method,
+            http_expected_status_min=http_expected_status_min,
+            http_expected_status_max=http_expected_status_max,
+            http_body_contains=http_body_contains, http_verify_tls=http_verify_tls,
+            dns_record_type=dns_record_type, dns_resolver=dns_resolver,
+            dns_expected_value=dns_expected_value,
+        )
 
         with self._lock:
             server = self.servers.get(server_id)
