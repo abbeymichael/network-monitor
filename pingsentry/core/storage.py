@@ -19,7 +19,10 @@ from typing import List, Dict, Any
 from cryptography.fernet import Fernet, InvalidToken
 from platformdirs import user_data_dir
 
-from .models import Server, SmsProviderConfig, AppSettings, LogEntry
+from .models import (
+    Server, SmsProviderConfig, AppSettings, LogEntry,
+    NotificationRecord, StatusEvent,
+)
 
 APP_NAME = "PingSentry"
 APP_AUTHOR = "PingSentry"
@@ -51,6 +54,14 @@ def _key_path() -> Path:
 
 def _log_path() -> Path:
     return data_dir() / "history.log.jsonl"
+
+
+def _notifications_path() -> Path:
+    return data_dir() / "notifications.jsonl"
+
+
+def _events_path() -> Path:
+    return data_dir() / "status_events.jsonl"
 
 
 # --------------------------------------------------------------------------
@@ -194,5 +205,119 @@ def load_recent_logs(limit: int = 300) -> List[Dict[str, Any]]:
 def clear_logs() -> None:
     with _lock:
         p = _log_path()
+        if p.exists():
+            p.unlink()
+
+
+# --------------------------------------------------------------------------
+# Notifications (append-only jsonl, capped) — powers the bell + Notifications page
+# --------------------------------------------------------------------------
+
+MAX_NOTIFICATIONS = 2000
+
+
+def append_notification(rec: NotificationRecord) -> None:
+    with _lock:
+        p = _notifications_path()
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec.to_dict()) + "\n")
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()
+            if len(lines) > MAX_NOTIFICATIONS:
+                trimmed = lines[-MAX_NOTIFICATIONS:]
+                p.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+
+def load_notifications(limit: int = 500) -> List[NotificationRecord]:
+    p = _notifications_path()
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: List[NotificationRecord] = []
+    for line in lines[-limit:]:
+        try:
+            out.append(NotificationRecord.from_dict(json.loads(line)))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def mark_notifications_read() -> None:
+    """Flag every stored notification as read (called when the bell is opened)."""
+    with _lock:
+        p = _notifications_path()
+        if not p.exists():
+            return
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        new_lines = []
+        for line in lines:
+            try:
+                d = json.loads(line)
+                d["read"] = True
+                new_lines.append(json.dumps(d))
+            except json.JSONDecodeError:
+                continue
+        p.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+
+
+def clear_notifications() -> None:
+    with _lock:
+        p = _notifications_path()
+        if p.exists():
+            p.unlink()
+
+
+# --------------------------------------------------------------------------
+# Status events (append-only jsonl, capped) — per-server up/down timeline
+# --------------------------------------------------------------------------
+
+MAX_EVENTS = 5000
+
+
+def append_status_event(ev: StatusEvent) -> None:
+    with _lock:
+        p = _events_path()
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(ev.to_dict()) + "\n")
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()
+            if len(lines) > MAX_EVENTS:
+                trimmed = lines[-MAX_EVENTS:]
+                p.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+
+def load_status_events(server_id: str = "", limit: int = 500) -> List[StatusEvent]:
+    p = _events_path()
+    if not p.exists():
+        return []
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    out: List[StatusEvent] = []
+    for line in lines:
+        try:
+            ev = StatusEvent.from_dict(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+        if server_id and ev.server_id != server_id:
+            continue
+        out.append(ev)
+    return out[-limit:]
+
+
+def clear_status_events() -> None:
+    with _lock:
+        p = _events_path()
         if p.exists():
             p.unlink()

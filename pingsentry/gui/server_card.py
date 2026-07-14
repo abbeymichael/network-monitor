@@ -7,7 +7,7 @@ import customtkinter as ctk
 
 from ..core.models import Server, CheckMethod
 from . import theme
-from .widgets import Badge, GhostButton
+from .widgets import Badge, GhostButton, Heartbeat
 
 
 def _method_label(server: Server) -> str:
@@ -42,6 +42,7 @@ class ServerCard(ctk.CTkFrame):
         on_delete: Callable[[Server], None],
         on_check_now: Callable[[Server], None],
         on_toggle_enabled: Callable[[Server, bool], None],
+        on_open_detail: Callable[[Server], None] = None,
         **kwargs,
     ):
         super().__init__(master, fg_color=theme.BG_CARD, corner_radius=12, **kwargs)
@@ -50,16 +51,21 @@ class ServerCard(ctk.CTkFrame):
         self.on_delete = on_delete
         self.on_check_now = on_check_now
         self.on_toggle_enabled = on_toggle_enabled
+        self.on_open_detail = on_open_detail
 
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=1)
+
+        # Animated heartbeat (proves the check is happening) -----------------
+        self.heartbeat = Heartbeat(self, status=server.status if server.enabled else "paused")
+        self.heartbeat.grid(row=0, column=0, rowspan=2, padx=(16, 6), pady=16, sticky="w")
 
         # Status dot + badge -------------------------------------------------
-        self.badge = Badge(self, status=server.status)
-        self.badge.grid(row=0, column=0, rowspan=2, padx=(16, 14), pady=16, sticky="w")
+        self.badge = Badge(self, status=server.status if server.enabled else "paused")
+        self.badge.grid(row=0, column=1, rowspan=2, padx=(6, 14), pady=16, sticky="w")
 
         # Name + address ------------------------------------------------------
         info_frame = ctk.CTkFrame(self, fg_color="transparent")
-        info_frame.grid(row=0, column=1, sticky="ew", pady=(14, 0))
+        info_frame.grid(row=0, column=2, sticky="ew", pady=(14, 0))
         self.name_label = ctk.CTkLabel(
             info_frame, text=server.name, font=theme.font(15, "bold"),
             text_color=theme.TEXT, anchor="w",
@@ -71,11 +77,11 @@ class ServerCard(ctk.CTkFrame):
             self, text=f"{_display_address(server)}  ·  {method_txt}  ·  every {server.interval_seconds}s",
             font=theme.font(12), text_color=theme.TEXT_DIM, anchor="w",
         )
-        self.detail_label.grid(row=1, column=1, sticky="ew", pady=(2, 14))
+        self.detail_label.grid(row=1, column=2, sticky="ew", pady=(2, 14))
 
         # Right side: last check + latency -----------------------------------
         meta_frame = ctk.CTkFrame(self, fg_color="transparent")
-        meta_frame.grid(row=0, column=2, rowspan=2, padx=10, sticky="e")
+        meta_frame.grid(row=0, column=3, rowspan=2, padx=10, sticky="e")
         self.latency_label = ctk.CTkLabel(
             meta_frame, text=self._latency_text(), font=theme.font(12),
             text_color=theme.TEXT_DIM,
@@ -86,10 +92,15 @@ class ServerCard(ctk.CTkFrame):
             text_color=theme.MUTED,
         )
         self.checked_label.pack(anchor="e")
+        self.uptime_label = ctk.CTkLabel(
+            meta_frame, text=self._uptime_text(), font=theme.font(11),
+            text_color=theme.MUTED,
+        )
+        self.uptime_label.pack(anchor="e")
 
         # Actions --------------------------------------------------------------
         actions = ctk.CTkFrame(self, fg_color="transparent")
-        actions.grid(row=0, column=3, rowspan=2, padx=(4, 16), sticky="e")
+        actions.grid(row=0, column=4, rowspan=2, padx=(4, 16), sticky="e")
 
         self.enabled_switch = ctk.CTkSwitch(
             actions, text="", width=40, progress_color=theme.ACCENT,
@@ -101,12 +112,17 @@ class ServerCard(ctk.CTkFrame):
             self.enabled_switch.deselect()
         self.enabled_switch.pack(side="left", padx=(0, 10))
 
+        GhostButton(actions, text="Details", width=68, command=self._open_detail).pack(side="left", padx=4)
         GhostButton(actions, text="Check", width=64, command=lambda: self.on_check_now(self.server)).pack(side="left", padx=4)
         GhostButton(actions, text="Edit", width=56, command=lambda: self.on_edit(self.server)).pack(side="left", padx=4)
         GhostButton(
             actions, text="✕", width=32, text_color=theme.DANGER,
             command=lambda: self.on_delete(self.server),
         ).pack(side="left", padx=(4, 0))
+
+    def _open_detail(self):
+        if self.on_open_detail:
+            self.on_open_detail(self.server)
 
     def _latency_text(self) -> str:
         if self.server.last_latency_ms is not None:
@@ -118,19 +134,36 @@ class ServerCard(ctk.CTkFrame):
             return f"checked {self.server.last_checked_at.split(' ')[1]}"
         return "not checked yet"
 
+    def _uptime_text(self) -> str:
+        total = self.server.total_checks
+        if total <= 0:
+            return "uptime —"
+        pct = 100.0 * self.server.total_up_checks / total
+        return f"uptime {pct:.1f}%"
+
     def _toggle(self):
         enabled = bool(self.enabled_switch.get())
         self.on_toggle_enabled(self.server, enabled)
 
+    def beat(self):
+        """Flash the heartbeat — called when a check completes for this server."""
+        try:
+            self.heartbeat.beat()
+        except Exception:
+            pass
+
     def refresh(self, server: Server):
         """Update displayed values in-place (avoids destroy/recreate flicker)."""
         self.server = server
-        self.badge.set_status(server.status if server.enabled else "paused")
+        status = server.status if server.enabled else "paused"
+        self.badge.set_status(status)
+        self.heartbeat.set_status(status)
         self.name_label.configure(text=server.name)
         method_txt = _method_label(server)
         self.detail_label.configure(text=f"{_display_address(server)}  ·  {method_txt}  ·  every {server.interval_seconds}s")
         self.latency_label.configure(text=self._latency_text())
         self.checked_label.configure(text=self._checked_text())
+        self.uptime_label.configure(text=self._uptime_text())
         if server.enabled and not self.enabled_switch.get():
             self.enabled_switch.select()
         elif not server.enabled and self.enabled_switch.get():

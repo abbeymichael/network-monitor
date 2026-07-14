@@ -20,6 +20,21 @@ and texts you when something goes down (and again when it recovers).
 - SMS escalation: cap on repeat "still down" alerts per outage, minutes
   between repeats, and a daily SMS cap per server — avoids alert spam.
 - Recovery SMS when a server comes back up.
+- **Hard cap of 5 SMS per outage** (plus the per-server/day cap) so a long
+  outage never floods you with texts.
+- **Live heartbeat animation** on every target — a breathing pulse that
+  flashes an expanding ring each time a check actually lands, so you can
+  *see* monitoring is happening.
+- **PC sound alerts**: plays `off.wav` when a target goes down and `on.wav`
+  when it recovers (toggle in Settings). All ping checks run **silently** —
+  no console/terminal window ever flashes on screen (Windows).
+- **In-app notifications**: slide-in toast pop-ups plus a **notification bell**
+  (with unread badge) in the top bar. A dedicated **Notifications page**
+  records every SMS — sent, failed (with the exact error), suppressed, and
+  recovery/test messages — filterable by status.
+- **Per-target detail page**: uptime %, current-state duration, lifetime
+  up/down totals, SMS-sent count, a latency sparkline, and a full up/down
+  timeline with per-incident durations and reasons.
 - Optional quiet hours (suppress SMS overnight, still logs the event).
 - SMS providers: **Twilio**, **Vonage (Nexmo)**, **Textbelt**, **TxtConnect**,
   or a fully **Custom Provider** — configure your own HTTP method, JSON/form
@@ -47,6 +62,24 @@ python3 main.py
   credentials, activity log).
 
 ## Packaging as a standalone executable
-```bash
-pyinstaller --noconfirm --windowed --name PingSentry main.py
+Bundle the notification sounds (`on.wav` / `off.wav`) as data files so they
+ship inside the frozen app. The app resolves them from `sys._MEIPASS` at
+runtime.
+
+Windows (PowerShell):
+```powershell
+pyinstaller --noconfirm --windowed --name PingSentry `
+  --add-data "pingsentry/assets/on.wav;pingsentry/assets" `
+  --add-data "pingsentry/assets/off.wav;pingsentry/assets" main.py
 ```
+
+macOS / Linux (note the `:` path separator instead of `;`):
+```bash
+pyinstaller --noconfirm --windowed --name PingSentry \
+  --add-data "pingsentry/assets/on.wav:pingsentry/assets" \
+  --add-data "pingsentry/assets/off.wav:pingsentry/assets" main.py
+```
+
+`--windowed` ensures no console window is attached to the app itself, and the
+ping/subprocess checks are additionally launched with `CREATE_NO_WINDOW` so no
+terminal ever pops up while monitoring runs.
