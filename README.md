@@ -83,3 +83,4 @@ pyinstaller --noconfirm --windowed --name PingSentry \
 `--windowed` ensures no console window is attached to the app itself, and the
 ping/subprocess checks are additionally launched with `CREATE_NO_WINDOW` so no
 terminal ever pops up while monitoring runs.
+
