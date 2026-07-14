@@ -7,4 +7,5 @@ build/
 dist/
 *.spec
 screenshot_*.png
+rev*.png
 *.log
